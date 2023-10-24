@@ -22,7 +22,7 @@ private:
 
 public:
     VideoSender() : socket(io_service), resolver(io_service){
-        std::string target_ip = "100.78.35.142";
+        std::string target_ip = "192.168.17.124";
         uint16_t target_port = 12345;
         // 解析目标 IP 地址和端口号
         boost::asio::ip::tcp::resolver::query query(target_ip, std::to_string(target_port));
@@ -36,7 +36,7 @@ public:
 
         // 订阅图像topic
         odom_sub = nh.subscribe("/Odometry", 1, &VideoSender::odometryCallback, this);
-        sub = nh.subscribe("/camera/color/image_raw", 1, &VideoSender::imageCallback, this);
+        sub = nh.subscribe("/camera/infra1/image_rect_raw", 1, &VideoSender::imageCallback, this);
         pc_sub = nh.subscribe("/merged", 1, &VideoSender::pointCloudCallback, this);
     }
 
@@ -51,9 +51,6 @@ public:
 
         appendDataToBuffer(sendBuffer, &dataSize, sizeof(dataSize));
         // appendDataToBuffer(sendBuffer, msg->header.frame_id, frame_id_size);
-
-
-
         // 将header信息添加到sendBuffer中
         uint32_t seq = msg->header.seq;
         appendDataToBuffer(sendBuffer, &seq, sizeof(seq));
@@ -86,11 +83,6 @@ public:
             appendDataToBuffer(sendBuffer, &count, sizeof(field.count));
         }
 
-        // for(uint8_t sub_data : msg->data){
-
-        // }
-        // appendDataToBuffer(sendBuffer, msg->data.data(), dataSize);
-        // sendBuffer.insert(sendBuffer.end(), msg->data.begin(), msg->data.end());
         for(uint8_t i : msg->data){
             appendDataToBuffer(sendBuffer, &i, sizeof(uint8_t));
             dataSize--;
@@ -163,9 +155,9 @@ public:
             cv::Mat frame = cv_bridge::toCvShare(msg, "bgr8")->image;
             std::vector<uchar> sendBuffer;
 
-           cv::Mat resizedFrame;
-           double scale = 0.5; // 缩小到原来的50%
-           cv::resize(frame, resizedFrame, cv::Size(), scale, scale, cv::INTER_LINEAR);
+            cv::Mat resizedFrame;
+            double scale = 1; // 缩小到原来的50%
+            cv::resize(frame, resizedFrame, cv::Size(), scale, scale, cv::INTER_LINEAR);
 
             // 将帧转换为字节数组 (这只是一个简化的示例)
             std::vector<uchar> buf;
@@ -203,7 +195,7 @@ public:
     }
 
     void run() {
-        ros::Rate loop_rate(1);
+        ros::Rate loop_rate(10);
         while (ros::ok()) {
             io_service.reset();
             ros::spinOnce();
