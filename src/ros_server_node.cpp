@@ -22,6 +22,7 @@ public:
         odometry_pub_ = nh_.advertise<nav_msgs::Odometry>("received_odometry", 1);
         // 在Session类的私有部分中添加
         pointcloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("received_pointcloud", 1);
+        compressed_image_pub_ = nh_.advertise<sensor_msgs::CompressedImage>("received_compressed_image", 1);
 
     }
 
@@ -40,6 +41,8 @@ private:
     std::vector<uchar> point_data_;
     std::vector<uchar> odometry_data_;
     sensor_msgs::PointCloud2 pointcloud2;
+    sensor_msgs::CompressedImage compressed_image_;
+    ros::Publisher compressed_image_pub_;
     // std::vector<uchar> dataType_;
     enum { header_length = sizeof(uint32_t), type_length = sizeof(uint8_t)};
 
@@ -67,11 +70,62 @@ private:
             case 0x03: // PointCloud2 data
                 readPointCloud2Data();
                 break;
+            case 0x04: // CompressedImage data
+                readCompressedImageData();
+                break;
             default:
                 // Handle unknown data type
                 break;
         }
     }
+
+    void readCompressedImageData() {
+        // 首先读取dataSize和formatSize
+        header_data_.resize(2 * sizeof(uint32_t)); // For dataSize and formatSize
+        boost::asio::async_read(socket_, boost::asio::buffer(header_data_),
+            boost::bind(&Session::handle_read_header_compressed_image, shared_from_this(),
+                boost::asio::placeholders::error));
+    }
+
+    void handle_read_header_compressed_image(const boost::system::error_code& error) {
+        if (error) {
+            // Handle error
+            async_read_data();
+            return;
+        }
+
+        auto it = header_data_.begin();
+        uint32_t dataSize = *reinterpret_cast<const uint32_t*>(&(*it));
+        it += sizeof(uint32_t);
+        uint32_t formatSize = *reinterpret_cast<const uint32_t*>(&(*it));
+
+        // 重新调整data_的大小来读取格式和数据
+        data_.resize(formatSize + dataSize);
+        boost::asio::async_read(socket_, boost::asio::buffer(data_),
+            boost::bind(&Session::handle_read_data_compressed_image, shared_from_this(),
+                boost::asio::placeholders::error, formatSize, dataSize));
+    }
+
+    void handle_read_data_compressed_image(const boost::system::error_code& error, uint32_t formatSize, uint32_t dataSize) {
+        if (error) {
+            // Handle error
+            async_read_data();
+            return;
+        }
+
+        if (data_.size() != formatSize + dataSize)
+            async_read_data();
+
+        auto it = data_.begin();
+
+        compressed_image_.format = std::string(it, it + formatSize);
+        it += formatSize;
+        compressed_image_.data.assign(it, it + dataSize);
+
+        compressed_image_pub_.publish(compressed_image_);
+        async_read_data(); // Read the next message
+    }
+
 
     void readPointCloud2Data() {
     // 首先，读取header#

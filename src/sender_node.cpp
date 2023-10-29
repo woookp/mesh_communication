@@ -38,6 +38,34 @@ public:
         odom_sub = nh.subscribe("/Odometry", 1, &VideoSender::odometryCallback, this);
         sub = nh.subscribe("/camera/color/image_raw", 1, &VideoSender::imageCallback, this);
         pc_sub = nh.subscribe("/merged", 1, &VideoSender::pointCloudCallback, this);
+        compressed_image_sub = nh.subscribe("/camera/color/image_raw/compressed", 1, &VideoSender::compressedImageCallback, this);
+    }
+
+    void compressedImageCallback(const sensor_msgs::CompressedImageConstPtr& msg) {
+        // 处理压缩图像并发送
+        std::vector<uchar> sendBuffer;
+
+        uint8_t dataType = 0x04; // CompressedImage data
+        sendBuffer.push_back(dataType);
+
+        uint32_t dataSize = msg->data.size();
+        uint32_t formatSize = msg->format.size();
+
+        // 添加dataSize
+        appendDataToBuffer(sendBuffer, &dataSize, sizeof(dataSize));
+
+        // 添加formatSize
+        appendDataToBuffer(sendBuffer, &formatSize, sizeof(formatSize));
+
+        // 添加msg->format内容
+        sendBuffer.insert(sendBuffer.end(), msg->format.begin(), msg->format.end());
+
+        // 添加msg->data内容
+        sendBuffer.insert(sendBuffer.end(), msg->data.begin(), msg->data.end());
+
+        // 使用Boost.Asio异步发送 sendBuffer
+        boost::asio::async_write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()),
+            boost::bind(&VideoSender::handle_write, this, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
     }
 
     void pointCloudCallback(const sensor_msgs::PointCloud2::ConstPtr& msg) {
