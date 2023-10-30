@@ -81,6 +81,7 @@ private:
     }
 
     void readCompressedImageData() {
+        std::cout << "readCompressedImageData" << std::endl;
         // 首先读取dataSize和formatSize
         header_data_.resize(2 * sizeof(uint32_t)); // For dataSize and formatSize
         boost::asio::async_read(socket_, boost::asio::buffer(header_data_),
@@ -92,9 +93,10 @@ private:
         if (error) {
             // Handle error
             async_read_data();
+            std::cout << "handle_read_header_compressed_image" << std::endl;
             return;
         }
-
+        std::cout << "handle_read_header_compressed_image" << std::endl;
         auto it = header_data_.begin();
         uint32_t dataSize = *reinterpret_cast<const uint32_t*>(&(*it));
         it += sizeof(uint32_t);
@@ -111,17 +113,25 @@ private:
         if (error) {
             // Handle error
             async_read_data();
+            std::cout << "handle_read_data_compressed_image" << std::endl;
             return;
         }
-
+        std::cout << "handle_read_data_compressed_image" << std::endl;
         if (data_.size() != formatSize + dataSize)
             async_read_data();
 
         auto it = data_.begin();
 
-        compressed_image_.format = std::string(it, it + formatSize);
+        compressed_image_.format = std::string(it, it + formatSize - 1);
         it += formatSize;
-        compressed_image_.data.assign(it, it + dataSize);
+
+        for (int i = 0; i < dataSize; i++){
+            uint8_t sub_compressed_image_data = *reinterpret_cast<const uint8_t*>(&(*it));
+            it += sizeof(uint8_t);
+            compressed_image_.data.push_back(sub_compressed_image_data);
+        }
+
+        // compressed_image_.data.assign(it, it + dataSize);
 
         compressed_image_pub_.publish(compressed_image_);
         async_read_data(); // Read the next message
@@ -255,15 +265,15 @@ private:
 
     void handle_read_more_data_pointcloud2(const boost::system::error_code& error){
         std::cout << "handle_read_more_data_pointcloud2" << std::endl;
-	if(dataSize != point_data_.size())
-	    async_read_data();
+	    if(dataSize != point_data_.size())
+	        async_read_data();
 
         if (error) {
             // Handle error
             std::cout << "handle_read_more_data_pointcloud2_error" << std::endl;
             async_read_data();
         }
-	auto more_it = point_data_.begin();
+	    auto more_it = point_data_.begin();
         for (int i = 0; i < dataSize; i++){
             uint8_t sub_point_data = *reinterpret_cast<const uint8_t*>(&(*more_it));
             more_it += sizeof(uint8_t);

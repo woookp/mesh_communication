@@ -51,7 +51,7 @@ public:
         sendBuffer.push_back(dataType);
 
         uint32_t dataSize = msg->data.size();
-        uint32_t formatSize = msg->format.size();
+        uint32_t formatSize = msg->format.size() + 1;
 
         // 添加dataSize
         appendDataToBuffer(sendBuffer, &dataSize, sizeof(dataSize));
@@ -60,14 +60,32 @@ public:
         appendDataToBuffer(sendBuffer, &formatSize, sizeof(formatSize));
 
         // 添加msg->format内容
-        sendBuffer.insert(sendBuffer.end(), msg->format.begin(), msg->format.end());
+        for (auto i : msg->format){
+            appendDataToBuffer(sendBuffer, &i, sizeof(char));
+        }
+        // sendBuffer.insert(sendBuffer, msg->format.begin(), msg->format.end());
 
         // 添加msg->data内容
-        sendBuffer.insert(sendBuffer.end(), msg->data.begin(), msg->data.end());
-
+        for(uint8_t i : msg->data){
+            appendDataToBuffer(sendBuffer, &i, sizeof(uint8_t));
+        }
+        // sendBuffer.insert(sendBuffer.end(), msg->data.begin(), msg->data.end());
+        if(sendBuffer.size() == dataSize + formatSize + 2*sizeof(uint32_t)){
+            std::cout << "size == dataSize + formatSize" << std::endl;
+        }else{
+            std::cout << "senderbuffer.size:" << sendBuffer.size() << std::endl;
+            std::cout << "datasize:" << dataSize << std::endl;
+            std::cout << "formatsize:" << formatSize << std::endl;
+            std::cout << "sizeof(uint32_t)" << sizeof(u_int32_t) << std::endl;
+        }
         // 使用Boost.Asio异步发送 sendBuffer
         boost::asio::async_write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()),
             boost::bind(&VideoSender::handle_write, this, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
+    }
+
+    void appendDataToBuffer(std::vector<uchar>& buffer, const void* data, size_t size) {
+        const uchar* byteData = reinterpret_cast<const uchar*>(data);
+        buffer.insert(buffer.end(), byteData, byteData + size);
     }
 
     void pointCloudCallback(const sensor_msgs::PointCloud2::ConstPtr& msg) {
@@ -134,11 +152,6 @@ public:
             std::cerr << "Error while writing: " << ec.message() << std::endl;
         }
         std::cout << "data insert down" << std::endl;
-    }
-
-    void appendDataToBuffer(std::vector<uchar>& buffer, const void* data, size_t size) {
-        const uchar* byteData = reinterpret_cast<const uchar*>(data);
-        buffer.insert(buffer.end(), byteData, byteData + size);
     }
 
     void odometryCallback(const nav_msgs::Odometry::ConstPtr& msg) {
