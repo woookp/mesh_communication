@@ -1,6 +1,6 @@
 #include <ros/ros.h>
 #include <sensor_msgs/Image.h>
-#include <sensor_msgs/CompressImage.h>
+#include "sensor_msgs/CompressedImage.h"
 #include <cv_bridge/cv_bridge.h>
 #include <iostream>
 #include <boost/asio.hpp>
@@ -15,6 +15,7 @@ private:
     ros::NodeHandle nh;
     ros::Subscriber sub;
     ros::Subscriber odom_sub;
+    ros::Subscriber compressed_image_sub;
     boost::asio::io_service io_service;
     tcp::socket socket;
     tcp::resolver resolver;
