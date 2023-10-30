@@ -1,5 +1,6 @@
 #include <ros/ros.h>
 #include <sensor_msgs/Image.h>
+#include <sensor_msgs/CompressImage.h>
 #include <cv_bridge/cv_bridge.h>
 #include <iostream>
 #include <boost/asio.hpp>
