@@ -42,7 +42,6 @@ private:
     std::vector<uchar> point_data_;
     std::vector<uchar> odometry_data_;
     sensor_msgs::PointCloud2 pointcloud2;
-    sensor_msgs::CompressedImage compressed_image_;
     ros::Publisher compressed_image_pub_;
     // std::vector<uchar> dataType_;
     enum { header_length = sizeof(uint32_t), type_length = sizeof(uint8_t)};
@@ -117,21 +116,29 @@ private:
             return;
         }
         std::cout << "handle_read_data_compressed_image" << std::endl;
+
+        sensor_msgs::CompressedImage compressed_image_;
         if (data_.size() != formatSize + dataSize)
             async_read_data();
 
         auto it = data_.begin();
-
-        compressed_image_.format = std::string(it, it + formatSize);
-        it += formatSize;
-
         for (int i = 0; i < dataSize; i++){
             uint8_t sub_compressed_image_data = *reinterpret_cast<const uint8_t*>(&(*it));
             it += sizeof(uint8_t);
             compressed_image_.data.push_back(sub_compressed_image_data);
         }
+        std::cout << "dataSize:" << compressed_image_.data.size() << std::endl;
+        it += dataSize;
+        
+        compressed_image_.format = std::string(it, it + formatSize);
+        
+
+
 
         // compressed_image_.data.assign(it, it + dataSize);
+
+        compressed_image_.header.stamp = ros::Time::now();
+        compressed_image_.header.frame_id = "camera_color_optical_frame";
 
         compressed_image_pub_.publish(compressed_image_);
         async_read_data(); // Read the next message
