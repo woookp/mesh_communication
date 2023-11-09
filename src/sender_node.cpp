@@ -37,9 +37,9 @@ public:
         }
 
         // 订阅图像topic
-        odom_sub = nh.subscribe("/Odometry", 1, &VideoSender::odometryCallback, this);
-        sub = nh.subscribe("/camera/color/image_raw", 1, &VideoSender::imageCallback, this);
-        pc_sub = nh.subscribe("/merged", 1, &VideoSender::pointCloudCallback, this);
+//        odom_sub = nh.subscribe("/Odometry", 1, &VideoSender::odometryCallback, this);
+//        sub = nh.subscribe("/camera/color/image_raw", 1, &VideoSender::imageCallback, this);
+//        pc_sub = nh.subscribe("/merged", 1, &VideoSender::pointCloudCallback, this);
         compressed_image_sub = nh.subscribe("/camera/color/image_raw/compressed", 1, &VideoSender::compressedImageCallback, this);
     }
 
@@ -51,13 +51,17 @@ public:
         sendBuffer.push_back(dataType);
 
         uint32_t dataSize = msg->data.size();
-        uint32_t formatSize = msg->format.size() + 1;
+        uint32_t formatSize = msg->format.size();
 
         // 添加dataSize
         appendDataToBuffer(sendBuffer, &dataSize, sizeof(dataSize));
 
         // 添加formatSize
         appendDataToBuffer(sendBuffer, &formatSize, sizeof(formatSize));
+
+        for(uint8_t i : msg->data){
+            appendDataToBuffer(sendBuffer, &i, sizeof(uint8_t));
+        }
 
         // 添加msg->format内容
         for (auto i : msg->format){
@@ -66,21 +70,25 @@ public:
         // sendBuffer.insert(sendBuffer, msg->format.begin(), msg->format.end());
 
         // 添加msg->data内容
-        for(uint8_t i : msg->data){
-            appendDataToBuffer(sendBuffer, &i, sizeof(uint8_t));
-        }
+
         // sendBuffer.insert(sendBuffer.end(), msg->data.begin(), msg->data.end());
-        if(sendBuffer.size() == dataSize + formatSize + 2*sizeof(uint32_t)){
-            std::cout << "size == dataSize + formatSize" << std::endl;
-        }else{
+        // if(sendBuffer.size() == dataSize + formatSize + 2*sizeof(uint32_t)){
+        //     std::cout << "size == dataSize + formatSize" << std::endl;
+        // }else{
             std::cout << "senderbuffer.size:" << sendBuffer.size() << std::endl;
             std::cout << "datasize:" << dataSize << std::endl;
             std::cout << "formatsize:" << formatSize << std::endl;
             std::cout << "sizeof(uint32_t)" << sizeof(u_int32_t) << std::endl;
+        // }
+
+        boost::asio::write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()), ec);
+        if(ec) {
+        // 处理错误
+            std::cerr << "Error while writing: " << ec.message() << std::endl;
         }
         // 使用Boost.Asio异步发送 sendBuffer
-        boost::asio::async_write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()),
-            boost::bind(&VideoSender::handle_write, this, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
+        // boost::asio::async_write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()),
+        //     boost::bind(&VideoSender::handle_write, this, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
     }
 
     void appendDataToBuffer(std::vector<uchar>& buffer, const void* data, size_t size) {

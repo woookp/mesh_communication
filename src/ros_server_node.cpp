@@ -122,7 +122,7 @@ private:
 
         auto it = data_.begin();
 
-        compressed_image_.format = std::string(it, it + formatSize - 1);
+        compressed_image_.format = std::string(it, it + formatSize);
         it += formatSize;
 
         for (int i = 0; i < dataSize; i++){
