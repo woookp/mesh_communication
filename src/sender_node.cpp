@@ -24,7 +24,7 @@ private:
 
 public:
     VideoSender() : socket(io_service), resolver(io_service){
-        std::string target_ip = "192.168.179.34";
+        std::string target_ip = "192.168.97.34";
         uint16_t target_port = 12345;
         // 解析目标 IP 地址和端口号
         boost::asio::ip::tcp::resolver::query query(target_ip, std::to_string(target_port));
