@@ -29,7 +29,7 @@ def main():
     rospy.init_node('compressed_image_subscriber', anonymous=True)
     
     # 订阅compressed image data的话题
-    rospy.Subscriber("/received_compressed_image", CompressedImage, callback)
+    rospy.Subscriber("/ip_192_168_97_200/received_compressed_image", CompressedImage, callback)
     
     # 防止python退出直到节点停止
     try:
