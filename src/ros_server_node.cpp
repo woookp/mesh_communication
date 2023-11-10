@@ -19,12 +19,20 @@ class Session : public boost::enable_shared_from_this<Session> {
 public:
     Session(io_service &io_service, ros::NodeHandle &nh)
         : socket_(io_service), nh_(nh) {
-        image_pub_ = nh_.advertise<sensor_msgs::Image>("received_image", 1);
-        odometry_pub_ = nh_.advertise<nav_msgs::Odometry>("received_odometry", 1);
-        // 在Session类的私有部分中添加
-        pointcloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("received_pointcloud", 1);
-        compressed_image_pub_ = nh_.advertise<sensor_msgs::CompressedImage>("received_compressed_image", 1);
+        // 获取发送端（客户端）的IP地址
+        std::string sender_ip = socket_.remote_endpoint().address().to_string();
+        
+        // 构造基于IP的topic名称
+        std::string image_topic = sender_ip + "/received_image";
+        std::string odometry_topic = sender_ip + "/received_odometry";
+        std::string pointcloud_topic = sender_ip + "/received_pointcloud";
+        std::string compressed_image_topic = sender_ip + "/received_compressed_image";
 
+        // 使用新的topic名称来广告
+        image_pub_ = nh_.advertise<sensor_msgs::Image>(image_topic, 1);
+        odometry_pub_ = nh_.advertise<nav_msgs::Odometry>(odometry_topic, 1);
+        pointcloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(pointcloud_topic, 1);
+        compressed_image_pub_ = nh_.advertise<sensor_msgs::CompressedImage>(compressed_image_topic, 1);
     }
 
     ip::tcp::socket &socket() { return socket_; }

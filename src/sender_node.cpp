@@ -21,11 +21,15 @@ private:
     tcp::resolver resolver;
     boost::system::error_code ec;
     ros::Subscriber pc_sub;
+    boost::asio::deadline_timer deadline;
 
 public:
-    VideoSender() : socket(io_service), resolver(io_service){
+    VideoSender() : socket(io_service), resolver(io_service),  deadline(io_service){
         std::string target_ip = "192.168.97.34";
         uint16_t target_port = 12345;
+        // std::string target_ip = argv[1]; // 第一个参数作为IP地址
+        // uint16_t target_port = static_cast<uint16_t>(std::atoi(argv[2])); // 第二个参数作为端口号
+
         // 解析目标 IP 地址和端口号
         boost::asio::ip::tcp::resolver::query query(target_ip, std::to_string(target_port));
         boost::asio::ip::tcp::resolver::iterator endpoint_iterator = resolver.resolve(query);
@@ -35,6 +39,10 @@ public:
             boost::asio::connect(socket, endpoint_iterator, ec);
             ros::Duration(1).sleep();
         }
+
+        deadline.expires_from_now(boost::posix_time::seconds(5));
+        deadline.async_wait(boost::bind(&VideoSender::handle_timeout, this, boost::asio::placeholders::error));
+ 
 
         // 订阅图像topic
 //        odom_sub = nh.subscribe("/Odometry", 1, &VideoSender::odometryCallback, this);
@@ -84,6 +92,7 @@ public:
         if(ec) {
         // 处理错误
             std::cerr << "Error while writing: " << ec.message() << std::endl;
+            reconnect();
         }
         // 使用Boost.Asio异步发送 sendBuffer
         // boost::asio::async_write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()),
@@ -157,6 +166,7 @@ public:
         if(ec) {
         // 处理错误
             std::cerr << "Error while writing: " << ec.message() << std::endl;
+            reconnect();
         }
         std::cout << "data insert down" << std::endl;
     }
@@ -249,12 +259,22 @@ public:
     void handle_write(const boost::system::error_code& ec, std::size_t bytes_transferred) {
         if (ec) {
             std::cerr << "Error sending data: " << ec.message() << std::endl;
+            std::cerr << "try reconnect " << ec.message() << std::endl;
+            reconnect();
             // 如果错误是因为连接断开，则尝试重连
-            if (ec == boost::asio::error::connection_reset || ec == boost::asio::error::eof) {
-                reconnect();
-            }
+            // if (ec == boost::asio::error::connection_reset || ec == boost::asio::error::eof) {
+                
+            // }
         }
     }
+    void handle_timeout(const boost::system::error_code& error) {
+        if (!error) {
+            // 超时处理代码
+            std::cout << "Write operation timed out." << std::endl;
+            reconnect();
+        }
+    }
+
 
     void reconnect() {
         socket.close(); // 关闭旧套接字
@@ -273,7 +293,7 @@ public:
     }
 
     void run() {
-        ros::Rate loop_rate(1);
+        ros::Rate loop_rate(10);
         while (ros::ok()) {
             io_service.reset();
             ros::spinOnce();
