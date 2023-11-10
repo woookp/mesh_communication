@@ -46,7 +46,6 @@ public:
     void compressedImageCallback(const sensor_msgs::CompressedImageConstPtr& msg) {
         // 处理压缩图像并发送
         std::vector<uchar> sendBuffer;
-
         uint8_t dataType = 0x04; // CompressedImage data
         sendBuffer.push_back(dataType);
 
@@ -250,7 +249,27 @@ public:
     void handle_write(const boost::system::error_code& ec, std::size_t bytes_transferred) {
         if (ec) {
             std::cerr << "Error sending data: " << ec.message() << std::endl;
+            // 如果错误是因为连接断开，则尝试重连
+            if (ec == boost::asio::error::connection_reset || ec == boost::asio::error::eof) {
+                reconnect();
+            }
         }
+    }
+
+    void reconnect() {
+        socket.close(); // 关闭旧套接字
+        socket = tcp::socket(io_service); // 创建新套接字
+        std::string target_ip = "192.168.97.34";
+        uint16_t target_port = 12345;
+        boost::asio::ip::tcp::resolver::query query(target_ip, std::to_string(target_port));
+        boost::asio::ip::tcp::resolver::iterator endpoint_iterator = resolver.resolve(query);
+        boost::asio::connect(socket, endpoint_iterator, ec);
+        while (ec) {
+            std::cerr << "Error reconnecting: " << ec.message() << ". Retrying..." << std::endl;
+            boost::asio::connect(socket, endpoint_iterator, ec);
+            ros::Duration(1).sleep();
+        }
+        std::cout << "Reconnected successfully." << std::endl;
     }
 
     void run() {
