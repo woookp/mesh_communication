@@ -365,7 +365,7 @@ private:
     }
 
     void readOdometryData() {
-    odometry_data_.resize(13 * sizeof(double));
+    odometry_data_.resize(13 * sizeof(double) + 2 * sizeof(uint32_t));
     boost::asio::async_read(socket_, boost::asio::buffer(odometry_data_),
                     boost::bind(&Session::handle_read_data_odometry, shared_from_this(),
                                 boost::asio::placeholders::error));
@@ -382,6 +382,10 @@ private:
 
         size_t idx = 0;
 
+        uint32_t sec = *reinterpret_cast<const uint32_t*>(&recvBuffer[idx]);
+        idx += sizeof(uint32_t);
+        uint32_t nsec = *reinterpret_cast<const uint32_t*>(&recvBuffer[idx]);
+        idx += sizeof(uint32_t);
         // 1. 解码位置数据
         double x = *reinterpret_cast<const double*>(&recvBuffer[idx]);
         idx += sizeof(double);
@@ -417,8 +421,12 @@ private:
 
         // 构建Odometry消息
         nav_msgs::Odometry odom;
-        odom.header.stamp = ros::Time::now();
+        odom.header.stamp.sec = sec;
+        odom.header.stamp.nsec = nsec;
+        // odom.header.stamp = ros::Time::now();
         // 这里可以设置frame_id，例如odom.header.frame_id = "odom";
+        odom.header.frame_id = "map";
+        odom.child_frame_id = "base_link";
         odom.pose.pose.position.x = x;
         odom.pose.pose.position.y = y;
         odom.pose.pose.position.z = z;

@@ -45,9 +45,9 @@ public:
  
 
         // 订阅图像topic
-//        odom_sub = nh.subscribe("/Odometry", 1, &VideoSender::odometryCallback, this);
+        odom_sub = nh.subscribe("/Odometry", 1, &VideoSender::odometryCallback, this);
 //        sub = nh.subscribe("/camera/color/image_raw", 1, &VideoSender::imageCallback, this);
-//        pc_sub = nh.subscribe("/merged", 1, &VideoSender::pointCloudCallback, this);
+        pc_sub = nh.subscribe("/merged", 1, &VideoSender::pointCloudCallback, this);
         compressed_image_sub = nh.subscribe("/camera/color/image_raw/compressed", 1, &VideoSender::compressedImageCallback, this);
     }
 
@@ -176,7 +176,11 @@ public:
         // 添加数据类型头部
         uint8_t dataType = 0x02; // Odometry data
         sendBuffer.push_back(dataType);
-
+        // 添加时间戳
+        uint32_t sec = msg->header.stamp.sec;
+        uint32_t nsec = msg->header.stamp.nsec;
+        appendDataToBuffer(sendBuffer, &sec, sizeof(sec));
+        appendDataToBuffer(sendBuffer, &nsec, sizeof(nsec));
         // 1. 编码位置数据
         double x = msg->pose.pose.position.x;
         double y = msg->pose.pose.position.y;
