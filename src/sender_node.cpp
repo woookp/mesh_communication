@@ -45,9 +45,9 @@ public:
  
 
         // 订阅图像topic
-        odom_sub = nh.subscribe("/Odometry", 1, &VideoSender::odometryCallback, this);
+        odom_sub = nh.subscribe("/sub_odom_1", 1, &VideoSender::odometryCallback, this);
 //        sub = nh.subscribe("/camera/color/image_raw", 1, &VideoSender::imageCallback, this);
-        pc_sub = nh.subscribe("/merged", 1, &VideoSender::pointCloudCallback, this);
+        pc_sub = nh.subscribe("/sub_submap_1", 1, &VideoSender::pointCloudCallback, this);
         compressed_image_sub = nh.subscribe("/camera/color/image_raw/compressed", 1, &VideoSender::compressedImageCallback, this);
     }
 
