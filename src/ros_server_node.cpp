@@ -110,7 +110,7 @@ private:
             return;
         }
         std::cout << "handle_read_command" << std::endl;
-        uint32_t commandValue = *reinterpret_cast<const uint32_t*>(header_data_.data());
+        uint32_t commandValue = *reinterpret_cast<const uint32_t*>(data_.data());
         // 将指令数据加入到ROS的参数服务器
         int commandDataInt = static_cast<int>(commandValue);
         nh_.setParam("/recieve_command_param", commandDataInt);
