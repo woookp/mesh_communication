@@ -40,7 +40,7 @@ public:
             ros::Duration(1).sleep();
         }
 
-        deadline.expires_from_now(boost::posix_time::seconds(5));
+        deadline.expires_from_now(boost::posix_time::seconds(20));
         deadline.async_wait(boost::bind(&VideoSender::handle_timeout, this, boost::asio::placeholders::error));
  
 
@@ -215,9 +215,16 @@ public:
         appendDataToBuffer(sendBuffer, &wy, sizeof(wy));
         appendDataToBuffer(sendBuffer, &wz, sizeof(wz));
 
-        // 5. 使用Boost.Asio异步发送 sendBuffer
-        boost::asio::async_write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()),
-            boost::bind(&VideoSender::handle_write, this, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
+        // // 5. 使用Boost.Asio异步发送 sendBuffer
+        // boost::asio::async_write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()),
+        //     boost::bind(&VideoSender::handle_write, this, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
+        //同步发送
+        boost::system::error_code ec;
+        boost::asio::write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()), ec);
+        if(ec) {
+            std::cerr << "Error while writing: " << ec.message() << std::endl;
+            reconnect();
+        }
     }
 
     void imageCallback(const sensor_msgs::ImageConstPtr& msg) {
@@ -265,10 +272,6 @@ public:
             std::cerr << "Error sending data: " << ec.message() << std::endl;
             std::cerr << "try reconnect " << ec.message() << std::endl;
             reconnect();
-            // 如果错误是因为连接断开，则尝试重连
-            // if (ec == boost::asio::error::connection_reset || ec == boost::asio::error::eof) {
-                
-            // }
         }
     }
     void handle_timeout(const boost::system::error_code& error) {
@@ -296,10 +299,35 @@ public:
         std::cout << "Reconnected successfully." << std::endl;
     }
 
+    void sendCommandData(uint32_t data) {
+        std::vector<uchar> sendBuffer;
+        uint8_t dataType = 0x05; // 新的数据类型标识符，例如 0x05
+        sendBuffer.push_back(dataType);
+
+        // 将数据转换为字节数组并添加到缓冲区
+        appendDataToBuffer(sendBuffer, &data, sizeof(data));
+
+        // 发送数据
+        boost::system::error_code ec;
+        boost::asio::write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()), ec);
+        if(ec) {
+            std::cerr << "Error while writing: " << ec.message() << std::endl;
+            reconnect();
+        }
+    }
+
     void run() {
         ros::Rate loop_rate(10);
         while (ros::ok()) {
             io_service.reset();
+            // 获取参数服务器上的指令数据
+            int commandDataInt;
+            if (nh.getParam("/command_param", commandDataInt)) {
+                uint32_t commandData = static_cast<uint32_t>(commandDataInt);
+                sendCommandData(commandData);
+            } else {
+                ROS_WARN("Failed to get command data,name: /command_param");
+            }
             ros::spinOnce();
             io_service.run_one();
             loop_rate.sleep();

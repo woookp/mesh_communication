@@ -84,11 +84,39 @@ private:
             case 0x04: // CompressedImage data
                 readCompressedImageData();
                 break;
+            case 0x05: // New case for command data
+                readCommandData();
+                break;
             default:
                 // Handle unknown data type
                 break;
         }
     }
+
+    void readCommandData() {
+        std::cout << "readCommandData" << std::endl;
+        // 假设指令数据结构为：[指令值 (uint32_t)]
+        data_.resize(sizeof(uint32_t));
+        boost::asio::async_read(socket_, boost::asio::buffer(data_),
+            boost::bind(&Session::handle_read_command, shared_from_this(),
+                boost::asio::placeholders::error));
+    }
+
+    void handle_read_command(const boost::system::error_code& error) {
+        if (error) {
+            // Handle error
+            std::cout << "handle_read_command error" << std::endl;
+            async_read_data();
+            return;
+        }
+        std::cout << "handle_read_command" << std::endl;
+        uint32_t commandValue = *reinterpret_cast<const uint32_t*>(header_data_.data());
+        // 将指令数据加入到ROS的参数服务器
+        int commandDataInt = static_cast<int>(commandValue);
+        nh_.setParam("/recieve_command_param", commandDataInt);
+        async_read_data(); // Read the next message
+    }
+
 
     void readCompressedImageData() {
         std::cout << "readCompressedImageData" << std::endl;
@@ -297,16 +325,6 @@ private:
             more_it += sizeof(uint8_t);
             pointcloud2.data.push_back(sub_point_data);
         }
-//        pointcloud2.data.insert(pointcloud2.data.end(), point_data_.begin(), point_data_.end());
-
-//        pointcloud2.data.resize(dataSize);
-
-        // Copy the data from point_data_ to pointcloud2.data
-//        auto srcIt = point_data_.begin();
-//        auto destIt = pointcloud2.data.begin();
-//        std::copy(srcIt, srcIt + dataSize, destIt);
-
-//	pointcloud2.data = point_data_;
         pointcloud_pub_.publish(pointcloud2);
         async_read_data(); // Read the next message
     }
