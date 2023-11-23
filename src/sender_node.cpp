@@ -7,6 +7,7 @@
 #include <opencv2/opencv.hpp>
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/PointCloud2.h>
+#include "visualization_msgs/Marker.h"
 
 using boost::asio::ip::tcp;
 std::string target_ip_yaml;
@@ -183,6 +184,11 @@ public:
             reconnect();
         }
         std::cout << "data insert down" << std::endl;
+    }
+
+    void markerCallback(const visualization_msgs::Marker::ConstPtr& msg){
+        // TODO: finish marker
+        int a = 0;
     }
 
     void odometryCallback(const nav_msgs::Odometry::ConstPtr& msg) {
