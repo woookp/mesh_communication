@@ -9,6 +9,11 @@
 #include <sensor_msgs/PointCloud2.h>
 
 using boost::asio::ip::tcp;
+std::string target_ip_yaml;
+int target_port_yaml;
+std::string laser_node_name;
+std::string odom_node_name;
+
 
 class VideoSender {
 private:
@@ -25,8 +30,13 @@ private:
 
 public:
     VideoSender() : socket(io_service), resolver(io_service),  deadline(io_service){
-        std::string target_ip = "192.168.1.18";
-        uint16_t target_port = 12345;
+
+        // 从yaml文件获得IP参数, 可以使用roslaunch获取
+        nh.param<std::string>("target_ip_yaml", target_ip_yaml, "192.168.97.34");
+        std::string target_ip = target_ip_yaml;
+
+        nh.param<int>("target_port", target_port_yaml, 12345);
+        uint16_t target_port = short(target_port_yaml);
         // std::string target_ip = argv[1]; // 第一个参数作为IP地址
         // uint16_t target_port = static_cast<uint16_t>(std::atoi(argv[2])); // 第二个参数作为端口号
 
@@ -45,9 +55,13 @@ public:
  
 
         // 订阅图像topic
-        odom_sub = nh.subscribe("/sub_odom_1", 1, &VideoSender::odometryCallback, this);
+        int node_id = 0;
+        nh.param<int>("node_id", node_id, 0);
+        std::string node_name_map_c_submap = "sub_submap_" + std::to_string(node_id);
+        std::string node_name_map_c_odom = "sub_odom_" + std::to_string(node_id);
+        odom_sub = nh.subscribe(node_name_map_c_odom, 1, &VideoSender::odometryCallback, this);
 //        sub = nh.subscribe("/camera/color/image_raw", 1, &VideoSender::imageCallback, this);
-        pc_sub = nh.subscribe("/sub_submap_1", 1, &VideoSender::pointCloudCallback, this);
+        pc_sub = nh.subscribe(node_name_map_c_submap, 1, &VideoSender::pointCloudCallback, this);
         compressed_image_sub = nh.subscribe("/camera/color/image_raw/compressed", 1, &VideoSender::compressedImageCallback, this);
     }
 
@@ -286,8 +300,13 @@ public:
     void reconnect() {
         socket.close(); // 关闭旧套接字
         socket = tcp::socket(io_service); // 创建新套接字
-        std::string target_ip = "192.168.1.18";
-        uint16_t target_port = 12345;
+        // 从yaml文件获得IP参数, 可以使用roslaunch获取
+        nh.param<std::string>("target_ip_yaml", target_ip_yaml, "192.168.97.34");
+        std::string target_ip = target_ip_yaml;
+        nh.param<int>("target_port", target_port_yaml, 12345);
+        uint16_t target_port = short(target_port_yaml);
+
+        // 解析目标 IP 地址和端口号
         boost::asio::ip::tcp::resolver::query query(target_ip, std::to_string(target_port));
         boost::asio::ip::tcp::resolver::iterator endpoint_iterator = resolver.resolve(query);
         boost::asio::connect(socket, endpoint_iterator, ec);

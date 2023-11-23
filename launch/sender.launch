@@ -1,0 +1,7 @@
+<launch>
+
+    <rosparam command="load" file="$(find laser_scan)/src/config/config.yaml" />
+    <node pkg="mesh_communication" type="sender" name="sender" output="screen"/>
+
+
+</launch>
