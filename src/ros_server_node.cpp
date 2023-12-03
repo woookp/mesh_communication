@@ -170,10 +170,6 @@ private:
         it += dataSize;
         
         compressed_image_.format = std::string(it, it + formatSize);
-        
-
-
-
         // compressed_image_.data.assign(it, it + dataSize);
 
         compressed_image_.header.stamp = ros::Time::now();

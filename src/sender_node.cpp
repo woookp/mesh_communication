@@ -21,15 +21,15 @@ private:
     tcp::resolver resolver;
     boost::system::error_code ec;
     ros::Subscriber pc_sub;
-    boost::asio::deadline_timer deadline;
+    bool is_blocked = false;
+    bool reduce_frame_rate = false;
 
 public:
-    VideoSender() : socket(io_service), resolver(io_service),  deadline(io_service){
-        std::string target_ip = "192.168.128.34";
+    VideoSender() : socket(io_service), resolver(io_service){
+        std::string target_ip = "192.168.142.145";
         uint16_t target_port = 12345;
         // std::string target_ip = argv[1]; // 第一个参数作为IP地址
         // uint16_t target_port = static_cast<uint16_t>(std::atoi(argv[2])); // 第二个参数作为端口号
-
         // 解析目标 IP 地址和端口号
         boost::asio::ip::tcp::resolver::query query(target_ip, std::to_string(target_port));
         boost::asio::ip::tcp::resolver::iterator endpoint_iterator = resolver.resolve(query);
@@ -39,16 +39,51 @@ public:
             boost::asio::connect(socket, endpoint_iterator, ec);
             ros::Duration(1).sleep();
         }
-
-        deadline.expires_from_now(boost::posix_time::seconds(20));
-        deadline.async_wait(boost::bind(&VideoSender::handle_timeout, this, boost::asio::placeholders::error));
- 
-
         // 订阅图像topic
-        odom_sub = nh.subscribe("/sub_odom_1", 1, &VideoSender::odometryCallback, this);
-//        sub = nh.subscribe("/camera/color/image_raw", 1, &VideoSender::imageCallback, this);
-        pc_sub = nh.subscribe("/sub_submap_1", 1, &VideoSender::pointCloudCallback, this);
-        compressed_image_sub = nh.subscribe("/camera/color/image_raw/compressed", 1, &VideoSender::compressedImageCallback, this);
+        odom_sub = nh.subscribe("/Odometry", 100, &VideoSender::odometryCallback, this);
+        sub = nh.subscribe("/usb_cam/image_raw", 100, &VideoSender::imageCallback, this);
+        pc_sub = nh.subscribe("/merged", 100, &VideoSender::pointCloudCallback, this);
+        compressed_image_sub = nh.subscribe("/camera/color/image_raw/compressed", 100, &VideoSender::compressedImageCallback, this);
+    }
+
+    void appendDataToBuffer(std::vector<uchar>& buffer, const void* data, size_t size) {
+        const uchar* byteData = reinterpret_cast<const uchar*>(data);
+        buffer.insert(buffer.end(), byteData, byteData + size);
+    }
+
+    void write_with_timeout(tcp::socket &socket, const std::vector<uchar> &data, boost::system::error_code &ec) {
+        auto start = std::chrono::high_resolution_clock::now();
+        boost::asio::write(socket, boost::asio::buffer(data.data(), data.size()), ec);
+
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> elapsed = end - start;
+
+        if (elapsed.count() > 0.03) {
+            is_blocked = true;
+            std::cout << "Channel is blocked." << std::endl;
+            if (!reduce_frame_rate) {
+                reduce_frame_rate = true;
+            }
+        } else {
+            // is_blocked = false;
+        }
+    }
+
+
+    void reconnect() {
+        socket.close(); // 关闭旧套接字
+        socket = tcp::socket(io_service); // 创建新套接字
+        std::string target_ip = "192.168.142.145";
+        uint16_t target_port = 12345;
+        boost::asio::ip::tcp::resolver::query query(target_ip, std::to_string(target_port));
+        boost::asio::ip::tcp::resolver::iterator endpoint_iterator = resolver.resolve(query);
+        boost::asio::connect(socket, endpoint_iterator, ec);
+        while (ec) {
+            std::cerr << "Error reconnecting: " << ec.message() << ". Retrying..." << std::endl;
+            boost::asio::connect(socket, endpoint_iterator, ec);
+            ros::Duration(1).sleep();
+        }
+        std::cout << "Reconnected successfully." << std::endl;
     }
 
     void compressedImageCallback(const sensor_msgs::CompressedImageConstPtr& msg) {
@@ -82,13 +117,13 @@ public:
         // if(sendBuffer.size() == dataSize + formatSize + 2*sizeof(uint32_t)){
         //     std::cout << "size == dataSize + formatSize" << std::endl;
         // }else{
-            std::cout << "senderbuffer.size:" << sendBuffer.size() << std::endl;
-            std::cout << "datasize:" << dataSize << std::endl;
-            std::cout << "formatsize:" << formatSize << std::endl;
-            std::cout << "sizeof(uint32_t)" << sizeof(u_int32_t) << std::endl;
+        // std::cout << "senderbuffer.size:" << sendBuffer.size() << std::endl;
+        // std::cout << "datasize:" << dataSize << std::endl;
+        // std::cout << "formatsize:" << formatSize << std::endl;
+        // std::cout << "sizeof(uint32_t)" << sizeof(u_int32_t) << std::endl;
         // }
-
-        boost::asio::write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()), ec);
+        boost::system::error_code ec;
+        write_with_timeout(socket, sendBuffer, ec);
         if(ec) {
         // 处理错误
             std::cerr << "Error while writing: " << ec.message() << std::endl;
@@ -99,11 +134,6 @@ public:
         //     boost::bind(&VideoSender::handle_write, this, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
     }
 
-    void appendDataToBuffer(std::vector<uchar>& buffer, const void* data, size_t size) {
-        const uchar* byteData = reinterpret_cast<const uchar*>(data);
-        buffer.insert(buffer.end(), byteData, byteData + size);
-    }
-
     void pointCloudCallback(const sensor_msgs::PointCloud2::ConstPtr& msg) {
         std::vector<uchar> sendBuffer;
         uint8_t dataType = 0x03; // PointCloud2 data
@@ -111,7 +141,7 @@ public:
 
         // 将data信息添加到sendBuffer中
         uint32_t dataSize = msg->data.size();
-        std::cout << "pointCloud datasize:" << dataSize << std::endl;
+        // std::cout << "pointCloud datasize:" << dataSize << std::endl;
 
         appendDataToBuffer(sendBuffer, &dataSize, sizeof(dataSize));
         // appendDataToBuffer(sendBuffer, msg->header.frame_id, frame_id_size);
@@ -159,16 +189,16 @@ public:
             appendDataToBuffer(sendBuffer, &i, sizeof(uint8_t));
             dataSize--;
         }
-        std::cout << "datasize--:" << dataSize << std::endl;
+        // std::cout << "datasize--:" << dataSize << std::endl;
         // 使用Boost.Asio异步发送 sendBuffer
         boost::system::error_code ec;
-        boost::asio::write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()), ec);
+        write_with_timeout(socket, sendBuffer, ec);
         if(ec) {
         // 处理错误
             std::cerr << "Error while writing: " << ec.message() << std::endl;
             reconnect();
         }
-        std::cout << "data insert down" << std::endl;
+        // std::cout << "data insert down" << std::endl;
     }
 
     void odometryCallback(const nav_msgs::Odometry::ConstPtr& msg) {
@@ -220,7 +250,7 @@ public:
         //     boost::bind(&VideoSender::handle_write, this, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
         //同步发送
         boost::system::error_code ec;
-        boost::asio::write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()), ec);
+        write_with_timeout(socket, sendBuffer, ec);
         if(ec) {
             std::cerr << "Error while writing: " << ec.message() << std::endl;
             reconnect();
@@ -235,7 +265,7 @@ public:
             std::vector<uchar> sendBuffer;
 
            cv::Mat resizedFrame;
-           double scale = 0.5; // 缩小到原来的50%
+           double scale = 1; // 缩小到原来的50%
            cv::resize(frame, resizedFrame, cv::Size(), scale, scale, cv::INTER_LINEAR);
 
             // 将帧转换为字节数组 (这只是一个简化的示例)
@@ -256,48 +286,17 @@ public:
             // 然后将 buf 的内容添加到 sendBuffer
             sendBuffer.insert(sendBuffer.end(), buf.begin(), buf.end());
 
+            boost::system::error_code ec;
+            write_with_timeout(socket, sendBuffer, ec);
             // 使用Boost.Asio异步发送 sendBuffer
-            boost::asio::async_write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()),
-                boost::bind(&VideoSender::handle_write, this, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
+            // boost::asio::async_write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()),
+            //     boost::bind(&VideoSender::handle_write, this, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
             // 使用Boost.Asio同步发送 sendBuffer
-
-
         } catch (cv_bridge::Exception& e) {
             std::cerr << "Could not convert from '" << msg->encoding << "' to 'bgr8'." << std::endl;
         }
     }
 
-    void handle_write(const boost::system::error_code& ec, std::size_t bytes_transferred) {
-        if (ec) {
-            std::cerr << "Error sending data: " << ec.message() << std::endl;
-            std::cerr << "try reconnect " << ec.message() << std::endl;
-            reconnect();
-        }
-    }
-    void handle_timeout(const boost::system::error_code& error) {
-        if (!error) {
-            // 超时处理代码
-            std::cout << "Write operation timed out." << std::endl;
-            reconnect();
-        }
-    }
-
-
-    void reconnect() {
-        socket.close(); // 关闭旧套接字
-        socket = tcp::socket(io_service); // 创建新套接字
-        std::string target_ip = "192.168.128.34";
-        uint16_t target_port = 12345;
-        boost::asio::ip::tcp::resolver::query query(target_ip, std::to_string(target_port));
-        boost::asio::ip::tcp::resolver::iterator endpoint_iterator = resolver.resolve(query);
-        boost::asio::connect(socket, endpoint_iterator, ec);
-        while (ec) {
-            std::cerr << "Error reconnecting: " << ec.message() << ". Retrying..." << std::endl;
-            boost::asio::connect(socket, endpoint_iterator, ec);
-            ros::Duration(1).sleep();
-        }
-        std::cout << "Reconnected successfully." << std::endl;
-    }
 
     void sendCommandData(uint32_t data) {
         std::vector<uchar> sendBuffer;
@@ -316,9 +315,14 @@ public:
         }
     }
 
-    void run() {
-        ros::Rate loop_rate(10);
+    void run() {  
         while (ros::ok()) {
+            ros::Rate loop_rate(10);
+            if(is_blocked){
+                loop_rate = ros::Rate(1); // 设置为1Hz
+            }else{
+                loop_rate = ros::Rate(10); // 设置为10Hz
+            }
             io_service.reset();
             // 获取参数服务器上的指令数据
             int commandDataInt;
