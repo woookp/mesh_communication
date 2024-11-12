@@ -6,5 +6,5 @@ Log/*.pdf
 PCD/*.pcd
 .idea
 cmake-build-debug
-.vscode
-src/.vscode
+/.vscode/
+/src/.vscode/
