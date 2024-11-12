@@ -1,0 +1,3 @@
+node_id : 1
+target_ip_yaml: "127.0.0.1"
+target_port_yaml: 12345
