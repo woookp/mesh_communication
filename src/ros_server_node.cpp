@@ -11,6 +11,7 @@
 #include <opencv2/opencv.hpp>
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/PointCloud2.h>
+#include "visualization_msgs/Marker.h"
 
 using namespace boost::asio;
 using boost::system::error_code;
@@ -26,16 +27,24 @@ public:
         std::string s_client_ip = socket_.remote_endpoint().address().to_string();
         // 构造基于IP的topic名称
         std::replace(s_client_ip.begin(), s_client_ip.end(), '.', '_');
-        std::string image_topic = "ip_" + s_client_ip  + "/received_image";
-        std::string odometry_topic = "ip_" + s_client_ip + "/received_odometry";
-        std::string pointcloud_topic = "ip_" + s_client_ip  + "/received_pointcloud";
-        std::string compressed_image_topic = "ip_" + s_client_ip  + "/received_compressed_image";
+        // read ip to id reference yaml file ip_i: id_i
+        int id_int=0;
+        std::string client_ip_name = "node"+s_client_ip;
+        nh_.param<int>(client_ip_name, id_int, 10);
+        std::string id = std::to_string(id_int);
+
+        std::string image_topic = "sub_image_" + id;
+        std::string odometry_topic = "sub_odom_" + id;
+        std::string pointcloud_topic = "sub_submap_" + id;
+        std::string compressed_image_topic = "sub_compressed_image_" + id;
+        std::string marker_topic = "sub_marker_" + id;
 
         // 使用新的topic名称来广告
         image_pub_ = nh_.advertise<sensor_msgs::Image>(image_topic, 1);
         odometry_pub_ = nh_.advertise<nav_msgs::Odometry>(odometry_topic, 1);
         pointcloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(pointcloud_topic, 1);
         compressed_image_pub_ = nh_.advertise<sensor_msgs::CompressedImage>(compressed_image_topic, 1);  
+        marker_pub_ = nh_.advertise<visualization_msgs::Marker>(marker_topic, 1);
     }
 
     ip::tcp::socket &socket() { return socket_; }
@@ -52,8 +61,10 @@ private:
     std::vector<uchar> data_;
     std::vector<uchar> point_data_;
     std::vector<uchar> odometry_data_;
+    std::vector<uchar> marker_data_;
     sensor_msgs::PointCloud2 pointcloud2;
     ros::Publisher compressed_image_pub_;
+
     // std::vector<uchar> dataType_;
     enum { header_length = sizeof(uint32_t), type_length = sizeof(uint8_t)};
 
@@ -86,6 +97,9 @@ private:
                 break;
             case 0x05: // New case for command data
                 readCommandData();
+                break;
+            case 0x06: // New case for marker data
+                readMarkerData();
                 break;
             default:
                 // Handle unknown data type
@@ -170,6 +184,10 @@ private:
         it += dataSize;
         
         compressed_image_.format = std::string(it, it + formatSize);
+        
+
+
+
         // compressed_image_.data.assign(it, it + dataSize);
 
         compressed_image_.header.stamp = ros::Time::now();
@@ -461,6 +479,91 @@ private:
         async_read_data(); // go back to reading more data
     }
 
+    void readMarkerData(){
+        // read ros marker data from socket
+        std::cout << "readMarkerData" << std::endl;
+        marker_data_.resize(5*sizeof(uint32_t)+7*sizeof(double));
+        boost::asio::async_read(socket_, boost::asio::buffer(marker_data_),
+            boost::bind(&Session::handle_read_marker, shared_from_this(),
+                boost::asio::placeholders::error));
+    }
+
+    void handle_read_marker(const boost::system::error_code& error) {
+        if (error) {
+            // Handle error
+            std::cout << "handle_read_marker error" << std::endl;
+            async_read_data();
+            return;
+        }
+
+        const uchar* recvBuffer = marker_data_.data();
+
+        size_t idx = 0;
+        std::cout<<"marker buffer 解析"<<std::endl;
+        uint32_t sec = *reinterpret_cast<const uint32_t*>(&recvBuffer[idx]);
+        idx += sizeof(uint32_t);
+        uint32_t nsec = *reinterpret_cast<const uint32_t*>(&recvBuffer[idx]);
+        idx += sizeof(uint32_t);
+        uint32_t id = *reinterpret_cast<const uint32_t*>(&recvBuffer[idx]);
+        std::cout<<"id:"<<id<<std::endl;
+        idx += sizeof(uint32_t);
+        uint32_t action = *reinterpret_cast<const uint32_t*>(&recvBuffer[idx]);
+        std::cout<<"action:"<<action<<std::endl;
+        idx += sizeof(uint32_t);
+        uint32_t type = *reinterpret_cast<const uint32_t*>(&recvBuffer[idx]);
+        std::cout<<"type"<<type<<std::endl;
+        idx += sizeof(uint32_t);
+        // 1. 解码位置数据
+        double x = *reinterpret_cast<const double*>(&recvBuffer[idx]);
+        idx += sizeof(double);
+        double y = *reinterpret_cast<const double*>(&recvBuffer[idx]);
+        idx += sizeof(double);
+        double z = *reinterpret_cast<const double*>(&recvBuffer[idx]);
+        idx += sizeof(double);
+
+        // 2. 解码方向（四元数）数据
+        double qx = *reinterpret_cast<const double*>(&recvBuffer[idx]);
+        idx += sizeof(double);
+        double qy = *reinterpret_cast<const double*>(&recvBuffer[idx]);
+        idx += sizeof(double);
+        double qz = *reinterpret_cast<const double*>(&recvBuffer[idx]);
+        idx += sizeof(double);
+        double qw = *reinterpret_cast<const double*>(&recvBuffer[idx]);
+        // idx += sizeof(double);
+
+        // double sx = *reinterpret_cast<const double*>(&recvBuffer[idx]);
+        // idx += sizeof(double);
+        // double sy = *reinterpret_cast<const double*>(&recvBuffer[idx]);
+        // idx += sizeof(double);
+        // double sz = *reinterpret_cast<const double*>(&recvBuffer[idx]);
+
+        std::cout << "handle_read_marker" << std::endl;
+
+        // 发布Marker消息
+        std::cout << "marker get"<< std::endl;
+        visualization_msgs::Marker marker;
+        marker.header.stamp.sec = sec;
+        marker.header.stamp.nsec = nsec;
+        marker.header.frame_id = "map";
+        // ros info id type action
+        ROS_INFO("marker type:%d,action:%d,id:%d", type, action, id);
+        marker.id = id;
+        marker.type = type;
+        marker.action = action;
+        marker.pose.position.x = x;
+        marker.pose.position.y = y;
+        marker.pose.position.z = z;
+        marker.pose.orientation.x = qx;
+        marker.pose.orientation.y = qy;
+        marker.pose.orientation.z = qz;
+        marker.pose.orientation.w = qw;
+        std::cout<<"marker try pub"<<std::endl;
+        marker_pub_.publish(marker);
+
+
+
+        async_read_data(); // Read the next message
+    }
 
 
     ip::tcp::socket socket_;
@@ -468,6 +571,7 @@ private:
     ros::Publisher image_pub_;
     ros::Publisher odometry_pub_;
     ros::Publisher pointcloud_pub_;
+    ros::Publisher marker_pub_;
     enum { max_length = 1000000 + header_length };  // Updated max_length
 };
 
@@ -511,6 +615,7 @@ int main(int argc, char **argv) {
 
     int port;
     nh.param<int>("server_port", port, 12345);
+
 
     try {
         io_service io_service;
