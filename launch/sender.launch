@@ -1,6 +1,6 @@
 <launch>
 	<rosparam command="load" file="$(find mesh_communication)/config/config.yaml" />
-    <node pkg="mesh_communication" type="sender" name="sender" output="screen"/>
+    <node pkg="mesh_communication" type="sender" name="sender" output="screen" />
 
 
 </launch>
