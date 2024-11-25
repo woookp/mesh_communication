@@ -8,9 +8,12 @@
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/PointCloud2.h>
 #include "visualization_msgs/Marker.h"
+#include <message_filters/synchronizer.h>
+#include <message_filters/sync_policies/approximate_time.h>
+#include <message_filters/subscriber.h>
 
 using boost::asio::ip::tcp;
-
+typedef message_filters::sync_policies::ApproximateTime<nav_msgs::Odometry, sensor_msgs::PointCloud2> MySyncPolicy;
 std::string target_ip_yaml;
 int target_port_yaml;
 std::string laser_node_name;
@@ -22,15 +25,17 @@ class VideoSender
 private:
     ros::NodeHandle nh;
     ros::Subscriber sub;
-    ros::Subscriber odom_sub;
+    message_filters::Subscriber<nav_msgs::Odometry> *odom_sub = nullptr;
     ros::Subscriber compressed_image_sub;
     boost::asio::io_service io_service;
     tcp::socket socket;
     tcp::resolver resolver;
     boost::system::error_code ec;
-    ros::Subscriber pc_sub;
+
+    message_filters::Subscriber<sensor_msgs::PointCloud2> *pc_sub = nullptr;
     ros::Subscriber marker_sub;
     boost::asio::deadline_timer deadline;
+    message_filters::Synchronizer<MySyncPolicy> *sync;
 
     friend void reconnectSocketThread(VideoSender *sender);
     // 队列：图像和Odometry数据
@@ -77,15 +82,116 @@ public:
         // 订阅图像topic
         int node_id = 0;
         nh.param<int>("node_id", node_id, 1);
+
         // std::string node_name_map_c_submap = "/sub_submap_" + std::to_string(node_id);
         // std::string node_name_map_c_odom = "/sub_odom_" + std::to_string(node_id);
         std::string node_name_map_c_submap = "/sub_submap_1";
         std::string node_name_map_c_odom = "/sub_odom_1";
-        odom_sub = nh.subscribe(node_name_map_c_odom, 1, &VideoSender::odometryCallback, this);
-        //        sub = nh.subscribe("/camera/color/image_raw", 1, &VideoSender::imageCallback, this);
-        pc_sub = nh.subscribe(node_name_map_c_submap, 1, &VideoSender::pointCloudCallback, this);
+        nh.param<std::string>("laser_name", node_name_map_c_submap, "/cloud_registered_body");
+        nh.param<std::string>("Odometry", node_name_map_c_odom, "/Odometry");
+
+        auto *odom_sub = new message_filters::Subscriber<nav_msgs::Odometry>(nh, node_name_map_c_odom, 1000);
+        auto *pc_sub = new message_filters::Subscriber<sensor_msgs::PointCloud2>(nh, node_name_map_c_submap, 1000);
         compressed_image_sub = nh.subscribe("/camera/color/image_raw/compressed", 1, &VideoSender::compressedImageCallback, this);
         marker_sub = nh.subscribe("/visualization_marker", 1, &VideoSender::markerCallback, this);
+        message_filters::Synchronizer<MySyncPolicy> *sync = new message_filters::Synchronizer<MySyncPolicy>(MySyncPolicy(1000), *odom_sub, *pc_sub);
+        sync->registerCallback(boost::bind(&VideoSender::syncOdomAndCloudCallback, this, _1, _2));
+    }
+
+    void syncOdomAndCloudCallback(const nav_msgs::OdometryConstPtr &odom_msg, const sensor_msgs::PointCloud2ConstPtr &cloud_msg)
+    {
+        // 加锁保护队列
+        {
+            std::lock_guard<std::mutex> lock(cloudQueueMutex);
+            if (cloudQueue.size() >= cloudQueueSize)
+            {
+                cloudQueue.pop(); // 如果队列满了，丢弃最旧的消息
+            }
+            cloudQueue.push(cloud_msg);
+        }
+        {
+
+            if (odomQueue.size() >= odomQueueSize)
+            {
+                odomQueue.pop(); // 如果队列满了，丢弃最旧的消息
+            }
+            odomQueue.push(odom_msg);
+        }
+        // 尝试发送数据
+        sendSyncOdomAndCloudData();
+
+        // add to package.xml
+        // add to CMakeLists.txt
+        return;
+    }
+
+    // 发送队列中的 Odometry 数据
+    void sendSyncOdomAndCloudData()
+    {
+        while (true)
+        {
+            nav_msgs::Odometry::ConstPtr odom_msg;
+            sensor_msgs::PointCloud2::ConstPtr cloud_msg;
+
+            // 从队列中提取消息
+            {
+                std::lock_guard<std::mutex> lock(Mutex);
+                if (odomQueue.empty() || cloudQueue.empty())
+                    break; // 队列为空，结束发送
+
+                odom_msg = odomQueue.front();
+                cloud_msg = cloudQueue.front();
+            }
+            // 将消息编码到缓冲区
+            std::vector<uchar> sendBuffer;
+            appendSyncOdomAndClouToBuffer(odom_msg, cloud_msg, sendBuffer);
+
+            // 使用 Boost.Asio 发送数据
+            boost::system::error_code ec;
+            boost::asio::write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()), ec);
+            std::lock_guard<std::mutex> lock(socket_mutex);
+
+            if (ec)
+            {
+                std::cerr << "Error while writing sync data: " << ec.message() << std::endl;
+                std::this_thread::sleep_for(std::chrono::seconds(1)); // 调整延迟时间，例如1秒
+                // print queue size
+                std::lock_guard<std::mutex> lock(Mutex);
+                std::cout << "sync size:" << odomQueue.size() << std::endl;
+                socket.close();
+                return; // 停止发送，等待重连
+            }
+            else
+            {
+                std::lock_guard<std::mutex> lock(Mutex);
+                odomQueue.pop();
+                cloudQueue.pop();
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            }
+        }
+    }
+
+    /**
+     * @brief Appends synchronized odometry and point cloud data to the buffer.
+     *
+     * This function takes in odometry and point cloud messages, and appends them
+     * to the provided buffer in a specific format. The data type identifier for
+     * synchronized odometry and point cloud is added to the buffer before the
+     * actual data.
+     *
+     * @param odom_msg The odometry message to be appended.
+     * @param pc_msg The point cloud message to be appended.
+     * @param sendBuffer The buffer to which the data will be appended.
+     */
+    void appendSyncOdomAndClouToBuffer(const nav_msgs::Odometry::ConstPtr &odom_msg, const sensor_msgs::PointCloud2::ConstPtr &pc_msg, std::vector<uchar> &sendBuffer)
+    {
+
+        uint8_t dataType = 0x07; // sync odom and point cloud
+        sendBuffer.push_back(dataType);
+        appendOdometryToBuffer(odom_msg, sendBuffer);
+        appendPointCloudToBuffer(pc_msg, sendBuffer);
+        // print buffer size
+        std::cout << "sendBuffer size:" << sendBuffer.size() << std::endl;
     }
 
     void compressedImageCallback(const sensor_msgs::CompressedImageConstPtr &msg)
@@ -153,9 +259,6 @@ public:
     void appendPointCloudToBuffer(const sensor_msgs::PointCloud2::ConstPtr &msg, std::vector<uchar> &sendBuffer)
     {
 
-        uint8_t dataType = 0x03; // PointCloud2 data
-        sendBuffer.push_back(dataType);
-
         // 将data信息添加到sendBuffer中
         uint32_t dataSize = msg->data.size();
         std::cout << "pointCloud datasize:" << dataSize << std::endl;
@@ -171,40 +274,67 @@ public:
         uint32_t nsec = stamp.nsec;
         appendDataToBuffer(sendBuffer, &sec, sizeof(sec));
         appendDataToBuffer(sendBuffer, &nsec, sizeof(nsec));
+        // print sec and nsec
+        std::cout << "sec:" << sec << std::endl;
+        std::cout << "nsec:" << nsec << std::endl;
         // 将height, width, is_dense, is_bigendian, point_step, row_step添加到sendBuffer中
         appendDataToBuffer(sendBuffer, &msg->height, sizeof(msg->height));
         appendDataToBuffer(sendBuffer, &msg->width, sizeof(msg->width));
-
-        bool is_bigendian = msg->is_bigendian;
+        std::cout << "height:" << msg->height << std::endl;
+        std::cout << "width:" << msg->width << std::endl;
+        uint8_t is_bigendian = msg->is_bigendian;
         uint32_t point_step = msg->point_step;
         uint32_t row_step = msg->row_step;
+        std::cout << "is_bigendian:" << is_bigendian << std::endl;
+        std::cout << "point_step:" << point_step << std::endl;
+        std::cout << "row_step:" << row_step << std::endl;
 
         appendDataToBuffer(sendBuffer, &is_bigendian, sizeof(is_bigendian));
         appendDataToBuffer(sendBuffer, &point_step, sizeof(point_step));
         appendDataToBuffer(sendBuffer, &row_step, sizeof(row_step));
 
-        bool is_dense = msg->is_dense;
+        uint8_t is_dense = msg->is_dense;
         appendDataToBuffer(sendBuffer, &is_dense, sizeof(is_dense));
+        std::cout << "is_dense:" << is_dense << std::endl;
 
+        // for (const auto &field : msg->fields)
+        // {
+        //     uint32_t offset = field.offset;
+        //     uint8_t datatype = field.datatype;
+        //     uint32_t count = field.count;
+        //     appendDataToBuffer(sendBuffer, &offset, sizeof(field.offset));
+        //     appendDataToBuffer(sendBuffer, &datatype, sizeof(field.datatype));
+        //     appendDataToBuffer(sendBuffer, &count, sizeof(field.count));
+        // }
         for (const auto &field : msg->fields)
         {
             uint32_t offset = field.offset;
             uint8_t datatype = field.datatype;
             uint32_t count = field.count;
+
+            // 序列化字段名
+            // uint32_t name_size = field.name.size();
+            // appendDataToBuffer(sendBuffer, &name_size, sizeof(name_size));
+            // appendDataToBuffer(sendBuffer, field.name.c_str(), name_size);
+
+            // 序列化其他字段
             appendDataToBuffer(sendBuffer, &offset, sizeof(field.offset));
             appendDataToBuffer(sendBuffer, &datatype, sizeof(field.datatype));
             appendDataToBuffer(sendBuffer, &count, sizeof(field.count));
         }
-
         // for(uint8_t sub_data : msg->data){
 
         // }
         // appendDataToBuffer(sendBuffer, msg->data.data(), dataSize);
         // sendBuffer.insert(sendBuffer.end(), msg->data.begin(), msg->data.end());
+        // for (uint8_t i : msg->data)
+        // {
+        //     appendDataToBuffer(sendBuffer, &i, sizeof(uint8_t));
+        //     dataSize--;
+        // }
         for (uint8_t i : msg->data)
         {
             appendDataToBuffer(sendBuffer, &i, sizeof(uint8_t));
-            dataSize--;
         }
     }
 
@@ -243,6 +373,8 @@ public:
             // 将消息编码到缓冲区
             uint32_t dataSize = msg->data.size();
             std::vector<uchar> sendBuffer;
+            uint8_t dataType = 0x03; // PointCloud2 data
+            sendBuffer.push_back(dataType);
             appendPointCloudToBuffer(msg, sendBuffer);
             std::cout << "datasize--:" << dataSize << std::endl;
             // 使用 Boost.Asio 发送数据
@@ -306,13 +438,7 @@ public:
         appendDataToBuffer(sendBuffer, &qy, sizeof(qy));
         appendDataToBuffer(sendBuffer, &qz, sizeof(qz));
         appendDataToBuffer(sendBuffer, &qw, sizeof(qw));
-        // 添加scale
-        // double sx = msg->scale.x;
-        // double sy = msg->scale.y;
-        // double sz = msg->scale.z;
-        // appendDataToBuffer(sendBuffer, &sx, sizeof(sx));
-        // appendDataToBuffer(sendBuffer, &sy, sizeof(sy));
-        // appendDataToBuffer(sendBuffer, &sz, sizeof(sz));
+
         // 同步发送
         boost::system::error_code ec;
         boost::asio::write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()), ec);
@@ -329,9 +455,6 @@ public:
     // 添加 Odometry 消息到缓冲区的工具函数
     void appendOdometryToBuffer(const nav_msgs::Odometry::ConstPtr &msg, std::vector<uchar> &sendBuffer)
     {
-        // 添加数据类型头部
-        uint8_t dataType = 0x02; // Odometry data
-        sendBuffer.push_back(dataType);
 
         // 添加时间戳
         uint32_t sec = msg->header.stamp.sec;
@@ -396,6 +519,8 @@ public:
 
             // 将消息编码到缓冲区
             std::vector<uchar> sendBuffer;
+            uint8_t dataType = 0x02; // Odometry data
+            sendBuffer.push_back(dataType);
             appendOdometryToBuffer(msg, sendBuffer);
 
             // 使用 Boost.Asio 发送数据
@@ -417,7 +542,7 @@ public:
             {
                 std::lock_guard<std::mutex> lock(odomQueueMutex);
                 odomQueue.pop();
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
             }
         }
     }
@@ -514,32 +639,6 @@ public:
             // reconnect();
         }
     }
-
-    // void reconnect()
-    // {
-    //     socket.close();                   // 关闭旧套接字
-    //     socket = tcp::socket(io_service); // 创建新套接字
-    //     // 从yaml文件获得IP参数, 可以使用roslaunch获取
-
-    //     std::cout << "target_ip_reconnecting:" << target_ip << std::endl;
-    //     std::cout << "target_port_reconnecting:" << target_port << std::endl;
-    //     // std::string target_ip = "192.168.1.18";
-    //     // uint16_t target_port = 12345;
-    //     //  解析目标 IP 地址和端口号
-    //     boost::asio::ip::tcp::resolver::query query(target_ip, std::to_string(target_port));
-    //     boost::asio::ip::tcp::resolver::iterator endpoint_iterator = resolver.resolve(query);
-    //     boost::asio::connect(socket, endpoint_iterator, ec);
-    //     while (ec)
-    //     {
-    //         std::cerr << "Error reconnecting: " << ec.message() << ". Retrying..." << std::endl;
-    //         boost::asio::connect(socket, endpoint_iterator, ec);
-    //         ros::Duration(1).sleep();
-    //                         std::lock_guard<std::mutex> lock(odomQueueMutex);
-    //             std::cout << "odomQueue size:" << odomQueue.size() << std::endl;
-    //     }
-    //     std::cout << "Reconnected successfully." << std::endl;
-    //     sendOdometryData();
-    // }
 
     void sendCommandData(uint32_t data)
     {
@@ -647,6 +746,7 @@ int main(int argc, char **argv)
     std::cout << "target_port:" << target_port << std::endl;
     VideoSender sender;
     // sender.run();
+
     std::thread reconnectThread(reconnectSocketThread, &sender);
 
     // ROS主循环

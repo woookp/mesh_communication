@@ -11,6 +11,7 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   std_msgs
   message_generation
+  message_filters
   cv_bridge
 )
 find_package(OpenCV 4.2.0 REQUIRED)
@@ -107,7 +108,7 @@ generate_messages(
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES mesh_communication
-  CATKIN_DEPENDS roscpp std_msgs message_runtime boost
+  CATKIN_DEPENDS roscpp std_msgs message_runtime boost  message_filters
 #  DEPENDS system_lib
 )
 
@@ -131,7 +132,7 @@ target_link_libraries(receiver ${catkin_LIBRARIES})
 
 add_executable(sender src/sender_node.cpp)
 add_dependencies(sender ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-target_link_libraries(sender ${catkin_LIBRARIES} ${OpenCV_LIBRARIES})
+target_link_libraries(sender ${catkin_LIBRARIES}   ${Boost_LIBRARIES} ${OpenCV_LIBRARIES})
 
 add_executable(server src/server.cpp src/session.cpp)
 add_dependencies(server ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
