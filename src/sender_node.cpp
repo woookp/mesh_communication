@@ -8,6 +8,7 @@
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/PointCloud2.h>
 #include "visualization_msgs/Marker.h"
+#include "visualization_msgs/MarkerArray.h"
 #include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/subscriber.h>
@@ -27,6 +28,7 @@ private:
     ros::Subscriber sub;
     message_filters::Subscriber<nav_msgs::Odometry> *odom_sub = nullptr;
     ros::Subscriber compressed_image_sub;
+    ros::Subscriber markerarray_sub;
     boost::asio::io_service io_service;
     tcp::socket socket;
     tcp::resolver resolver;
@@ -52,6 +54,7 @@ private:
     std::mutex odomQueueMutex;  // Odometry队列互斥锁
     std::mutex Mutex;           // sender互斥锁
     std::mutex socket_mutex;    // socket互斥锁
+    std::mutex sendMutex;       // 图像队列互斥锁
 
 public:
     VideoSender() : socket(io_service), resolver(io_service), deadline(io_service)
@@ -94,6 +97,7 @@ public:
         auto *pc_sub = new message_filters::Subscriber<sensor_msgs::PointCloud2>(nh, node_name_map_c_submap, 1000);
         compressed_image_sub = nh.subscribe("/camera/color/image_raw/compressed", 1, &VideoSender::compressedImageCallback, this);
         marker_sub = nh.subscribe("/visualization_marker", 1, &VideoSender::markerCallback, this);
+        markerarray_sub = nh.subscribe("detection_marker", 1, &VideoSender::markerArrayCallback, this);
         message_filters::Synchronizer<MySyncPolicy> *sync = new message_filters::Synchronizer<MySyncPolicy>(MySyncPolicy(1000), *odom_sub, *pc_sub);
         sync->registerCallback(boost::bind(&VideoSender::syncOdomAndCloudCallback, this, _1, _2));
     }
@@ -102,12 +106,14 @@ public:
     {
         // 加锁保护队列
         {
-            std::lock_guard<std::mutex> lock(cloudQueueMutex);
+            std::lock_guard<std::mutex> lock(Mutex);
             if (cloudQueue.size() >= cloudQueueSize)
             {
                 cloudQueue.pop(); // 如果队列满了，丢弃最旧的消息
             }
             cloudQueue.push(cloud_msg);
+            // print cloudQueue size
+            std::cout << "sync cloud queue size:" << cloudQueue.size() << std::endl;
         }
         {
 
@@ -116,13 +122,14 @@ public:
                 odomQueue.pop(); // 如果队列满了，丢弃最旧的消息
             }
             odomQueue.push(odom_msg);
+            std::cout << "sync cloud queue size:" << odomQueue.size() << std::endl;
         }
         // 尝试发送数据
+        std::lock_guard<std::mutex> lock(sendMutex);
         sendSyncOdomAndCloudData();
 
         // add to package.xml
         // add to CMakeLists.txt
-        return;
     }
 
     // 发送队列中的 Odometry 数据
@@ -163,10 +170,11 @@ public:
             }
             else
             {
+                std::cout << "send sync data sucess" << std::endl;
                 std::lock_guard<std::mutex> lock(Mutex);
                 odomQueue.pop();
                 cloudQueue.pop();
-                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
             }
         }
     }
@@ -242,7 +250,6 @@ public:
             std::cerr << "Error while writing: " << ec.message() << std::endl;
             socket.close();
             return;
-            // reconnect();
         }
         // 使用Boost.Asio异步发送 sendBuffer
         // boost::asio::async_write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()),
@@ -275,8 +282,8 @@ public:
         appendDataToBuffer(sendBuffer, &sec, sizeof(sec));
         appendDataToBuffer(sendBuffer, &nsec, sizeof(nsec));
         // print sec and nsec
-        std::cout << "sec:" << sec << std::endl;
-        std::cout << "nsec:" << nsec << std::endl;
+        // std::cout << "sec:" << sec << std::endl;
+        // std::cout << "nsec:" << nsec << std::endl;
         // 将height, width, is_dense, is_bigendian, point_step, row_step添加到sendBuffer中
         appendDataToBuffer(sendBuffer, &msg->height, sizeof(msg->height));
         appendDataToBuffer(sendBuffer, &msg->width, sizeof(msg->width));
@@ -295,7 +302,7 @@ public:
 
         uint8_t is_dense = msg->is_dense;
         appendDataToBuffer(sendBuffer, &is_dense, sizeof(is_dense));
-        std::cout << "is_dense:" << is_dense << std::endl;
+        // std::cout << "is_dense:" << is_dense << std::endl;
 
         // for (const auto &field : msg->fields)
         // {
@@ -396,7 +403,7 @@ public:
             {
                 std::lock_guard<std::mutex> lock(cloudQueueMutex);
                 cloudQueue.pop();
-                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
             }
             std::cout << "data insert down" << std::endl;
         }
@@ -448,7 +455,71 @@ public:
             std::cerr << "Error while writing: Marker" << ec.message() << std::endl;
             socket.close();
             return;
-            // reconnect();
+        }
+    }
+
+    void markerArrayCallback(const visualization_msgs::MarkerArray::ConstPtr &msg)
+    {
+        std::vector<uchar> sendBuffer;
+        uint8_t dataType = 0x08; // Marker data, 移到循环外部
+        sendBuffer.push_back(dataType);
+        // get the number of markers in markerarray
+
+        uint32_t marker_count = msg->markers.size();
+        appendDataToBuffer(sendBuffer, &marker_count, sizeof(marker_count));
+        for (const auto &marker : msg->markers)
+        {
+            // 添加时间戳
+            uint32_t sec = marker.header.stamp.sec;
+            uint32_t nsec = marker.header.stamp.nsec;
+            appendDataToBuffer(sendBuffer, &sec, sizeof(sec));
+            appendDataToBuffer(sendBuffer, &nsec, sizeof(nsec));
+
+            // 添加id
+            uint32_t id = marker.id;
+            appendDataToBuffer(sendBuffer, &id, sizeof(id));
+
+            // 添加action
+            uint32_t action = marker.action;
+            appendDataToBuffer(sendBuffer, &action, sizeof(action));
+
+            // 添加type
+            uint32_t type = marker.type;
+            appendDataToBuffer(sendBuffer, &type, sizeof(type));
+
+            // 输出日志
+            ROS_INFO("Marker id: %d, type: %d, action: %d", id, type, action);
+
+            // 添加pose
+            double px = marker.pose.position.x;
+            double py = marker.pose.position.y;
+            double pz = marker.pose.position.z;
+            appendDataToBuffer(sendBuffer, &px, sizeof(px));
+            appendDataToBuffer(sendBuffer, &py, sizeof(py));
+            appendDataToBuffer(sendBuffer, &pz, sizeof(pz));
+
+            double qx = marker.pose.orientation.x;
+            double qy = marker.pose.orientation.y;
+            double qz = marker.pose.orientation.z;
+            double qw = marker.pose.orientation.w;
+            appendDataToBuffer(sendBuffer, &qx, sizeof(qx));
+            appendDataToBuffer(sendBuffer, &qy, sizeof(qy));
+            appendDataToBuffer(sendBuffer, &qz, sizeof(qz));
+            appendDataToBuffer(sendBuffer, &qw, sizeof(qw));
+        }
+        // 通过Socket发送
+        
+        boost::system::error_code ec;
+        {
+            std::lock_guard<std::mutex> lock(socket_mutex); // 确保线程安全
+            boost::asio::write(socket, boost::asio::buffer(sendBuffer.data(), sendBuffer.size()), ec);
+        }
+
+        if (ec)
+        {
+            std::cerr << "Error while writing Markerarray " << ec.message() << std::endl;
+            socket.close();
+            return;
         }
     }
 
@@ -542,7 +613,7 @@ public:
             {
                 std::lock_guard<std::mutex> lock(odomQueueMutex);
                 odomQueue.pop();
-                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
             }
         }
     }
@@ -607,7 +678,7 @@ public:
                 std::cerr << "Error while writing image data: " << ec.message() << std::endl;
                 socket.close();
                 return;
-                // reconnect();
+
                 return; // 停止处理队列，等待重连
             }
             else
@@ -626,7 +697,6 @@ public:
             std::cerr << "try reconnect " << ec.message() << std::endl;
             socket.close();
             return;
-            // reconnect();
         }
     }
     void handle_timeout(const boost::system::error_code &error)
@@ -636,7 +706,6 @@ public:
             // 超时处理代码
             std::cout << "Write operation timed out." << std::endl;
             return;
-            // reconnect();
         }
     }
 
@@ -692,11 +761,11 @@ void reconnectSocketThread(VideoSender *sender)
     while (ros::ok())
     {
 
-        ROS_INFO("reconnect_theard");
+        //   ROS_INFO("reconnect_theard");
         try
         {
 
-            ROS_INFO("sender->socket.is_open()%d", sender->socket.is_open());
+            // ROS_INFO("sender->socket.is_open()%d", sender->socket.is_open());
             std::lock_guard<std::mutex> lock(sender->socket_mutex);
             if (!sender->socket.is_open())
             {
@@ -720,7 +789,12 @@ void reconnectSocketThread(VideoSender *sender)
                 }
                 else
                 {
+
                     ROS_INFO("Reconnected successfully");
+                    // sleep for 1 s and test again, if sucess resend
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                    //       std::lock_guard<std::mutex> lock(sender->sendMutex);
+                    // sender->sendSyncOdomAndCloudData();
                 }
             }
         }

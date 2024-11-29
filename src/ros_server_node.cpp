@@ -12,6 +12,7 @@
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/PointCloud2.h>
 #include "visualization_msgs/Marker.h"
+#include "visualization_msgs/MarkerArray.h"
 
 using namespace boost::asio;
 using boost::system::error_code;
@@ -40,13 +41,13 @@ public:
         std::string pointcloud_topic = "sub_submap_" + id;
         std::string compressed_image_topic = "sub_compressed_image_" + id;
         std::string marker_topic = "sub_marker_" + id;
-
-        // 使用新的topic名称来广告
-        image_pub_ = nh_.advertise<sensor_msgs::Image>(image_topic, 1);
+        std::string markerarray_topic = "sub_markerarray_" + id;
         odometry_pub_ = nh_.advertise<nav_msgs::Odometry>(odometry_topic, 1);
         pointcloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(pointcloud_topic, 1);
         compressed_image_pub_ = nh_.advertise<sensor_msgs::CompressedImage>(compressed_image_topic, 1);
+        image_pub_ = nh_.advertise<sensor_msgs::Image>(image_topic, 1);
         marker_pub_ = nh_.advertise<visualization_msgs::Marker>(marker_topic, 1);
+        markerArray_pub_ = nh_.advertise<visualization_msgs::MarkerArray>(markerarray_topic, 1);
     }
 
     ip::tcp::socket &socket() { return socket_; }
@@ -60,15 +61,24 @@ private:
     uint32_t dataSize_; // size of incoming data
     uint8_t dataType_;
     uint32_t dataSize;
+    uint32_t more_markerarray_datasize;
     std::vector<uchar> header_data_; // Separate buffer for header
     std::vector<uchar> data_;
     std::vector<uchar> point_data_;
+    std::vector<uchar> more_markerarray_data_;
     std::vector<uchar> odometry_data_;
     std::vector<uchar> sync_odom_and_cloud_;
     std::vector<uchar> marker_data_;
+    std::vector<uchar> markerarray_data_;
     sensor_msgs::PointCloud2 pointcloud2;
     sensor_msgs::PointCloud2 pointcloud2_sync;
+    visualization_msgs::MarkerArray markerarray;
     ros::Publisher compressed_image_pub_;
+    ros::Publisher image_pub_;
+    ros::Publisher markerArray_pub_;
+    ros::Publisher odometry_pub_;
+    ros::Publisher pointcloud_pub_;
+    ros::Publisher marker_pub_;
 
     // std::vector<uchar> dataType_;
     enum
@@ -76,6 +86,14 @@ private:
         header_length = sizeof(uint32_t),
         type_length = sizeof(uint8_t)
     };
+
+    ip::tcp::socket socket_;
+    ros::NodeHandle &nh_;
+
+    enum
+    {
+        max_length = 1000000 + header_length
+    }; // Updated max_length to include header_length
 
     void async_read_data()
     {
@@ -116,6 +134,9 @@ private:
             break;
         case 0x07:
             readSyncOdomAndCloudData();
+            break;
+        case 0x08:
+            readMarkerArrayData();
             break;
         default:
             // Handle unknown data type
@@ -215,6 +236,14 @@ private:
         compressed_image_.header.frame_id = "camera_color_optical_frame";
 
         compressed_image_pub_.publish(compressed_image_);
+
+        cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(compressed_image_, sensor_msgs::image_encodings::BGR8);
+
+        // 将 OpenCV 图像转换为 ROS 图像消息
+        sensor_msgs::Image::Ptr image_msg = cv_ptr->toImageMsg();
+
+        // 发布图像消息
+        image_pub_.publish(image_msg);
         async_read_data(); // Read the next message
     }
 
@@ -343,34 +372,6 @@ private:
         boost::asio::async_read(socket_, boost::asio::buffer(point_data_),
                                 boost::bind(&Session::handle_read_more_data_pointcloud2, shared_from_this(),
                                             boost::asio::placeholders::error));
-
-    }
-
-    void handle_read_more_data_pointcloud2(const boost::system::error_code &error)
-    {
-        std::cout << "handle_read_more_data_pointcloud2" << std::endl;
-        if (dataSize != point_data_.size())
-        {
-            std::cout << "error dataSize:" << dataSize << "point_data_size:" << point_data_.size() << std::endl;
-            async_read_data();
-        }
-        if (error)
-        {
-            // Handle error
-            std::cout << "handle_read_more_data_pointcloud2_error" << std::endl;
-            async_read_data();
-        }
-        std::cout << "dataSize:" << dataSize << "point_data_size:" << point_data_.size() << std::endl;
-        auto more_it = point_data_.begin();
-        for (int i = 0; i < dataSize; i++)
-        {
-            uint8_t sub_point_data = *reinterpret_cast<const uint8_t *>(&(*more_it));
-            more_it += sizeof(uint8_t);
-            pointcloud2.data.push_back(sub_point_data);
-        }
-        // return pointcloud2;
-         pointcloud_pub_.publish(pointcloud2);
-         async_read_data(); // Read the next message
     }
 
     void readImageData()
@@ -407,12 +408,6 @@ private:
         std::cout << "handle_read_data_image" << std::endl;
         if (!error)
         {
-            // Extract dataSize_ from the first part of the buffer
-            // Ensure the received data size matches expected size (header_length + dataSize_)
-            // if (data_.size() != header_length + dataSize_) {
-            //     // Handle error: Data received does not match expected size.
-            //     return;
-            // }
 
             // Decode the image
             if (data_.size() != dataSize_)
@@ -624,14 +619,13 @@ private:
         // print idx
         std::cout << "idx after odom:" << idx << std::endl;
         odometry_pub_.publish(odom);
-        // 创建点云消息
-        sensor_msgs::PointCloud2 pointcloud2;
 
         // 数据大小
-
+        pointcloud2.data.clear();
+        pointcloud2.fields.clear();
         dataSize = *reinterpret_cast<const uint32_t *>(&recvBuffer[idx]);
         // print dataSize_
-        std::cout << "pointcloud datasize:" << dataSize_ << std::endl;
+        std::cout << "pointcloud datasize:" << dataSize << std::endl;
         idx += sizeof(uint32_t);
 
         // Header解析
@@ -650,38 +644,24 @@ private:
         // PointCloud2字段解析
         pointcloud2.height = *reinterpret_cast<const uint32_t *>(&recvBuffer[idx]);
         idx += sizeof(uint32_t);
-        std::cout << "height:" << pointcloud2.height << std::endl;
+        std::cout << "cloudheight:" << pointcloud2.height << std::endl;
         pointcloud2.width = *reinterpret_cast<const uint32_t *>(&recvBuffer[idx]);
         idx += sizeof(uint32_t);
-        std::cout << "width:" << pointcloud2.width << std::endl;
+        std::cout << "cloudwidth:" << pointcloud2.width << std::endl;
         pointcloud2.is_bigendian = *reinterpret_cast<const uint8_t *>(&recvBuffer[idx]);
         idx += sizeof(uint8_t);
-        std::cout << "is_bigendian:" << pointcloud2.is_bigendian << std::endl;
+        std::cout << "cloudis_bigendian:" << pointcloud2.is_bigendian << std::endl;
         pointcloud2.point_step = *reinterpret_cast<const uint32_t *>(&recvBuffer[idx]);
         idx += sizeof(uint32_t);
-        std::cout << "point_step:" << pointcloud2.point_step << std::endl;
+        std::cout << "cloudpoint_step:" << pointcloud2.point_step << std::endl;
         pointcloud2.row_step = *reinterpret_cast<const uint32_t *>(&recvBuffer[idx]);
         idx += sizeof(uint32_t);
-        std::cout << "row_step:" << pointcloud2.row_step << std::endl;
+        std::cout << "cloudrow_step:" << pointcloud2.row_step << std::endl;
         pointcloud2.is_dense = *reinterpret_cast<const uint8_t *>(&recvBuffer[idx]);
         idx += sizeof(uint8_t);
-        // print is_dense
-        std::cout << "is_dense:" << pointcloud2.is_dense << std::endl;
+
         // Fields解析
         const std::array<std::string, 4> field_names = {"x", "y", "z", "intensity"};
-        pointcloud2.fields.resize(4);
-        // for (size_t i = 0; i < 4; ++i)
-        // {
-        //     pointcloud2.fields[i].name = field_names[i];
-        //     pointcloud2.fields[i].offset = *reinterpret_cast<const uint32_t *>(&recvBuffer[idx]);
-        //     idx += sizeof(uint32_t);
-        //     pointcloud2.fields[i].datatype = *reinterpret_cast<const uint8_t *>(&recvBuffer[idx]);
-        //     idx += sizeof(uint8_t);
-        //     pointcloud2.fields[i].count = *reinterpret_cast<const uint32_t *>(&recvBuffer[idx]);
-        //     idx += sizeof(uint32_t);
-        //     // print idx
-        //     std::cout << "idx after field:" << idx << std::endl;
-        // }
 
         pointcloud2.fields.resize(4);
 
@@ -705,7 +685,7 @@ private:
         idx += sizeof(uint8_t);
 
         pointcloud2.fields[1].count = *reinterpret_cast<const uint32_t *>(&recvBuffer[idx]);
-        idx+= sizeof(uint32_t);
+        idx += sizeof(uint32_t);
 
         pointcloud2.fields[2].name = 'z';
 
@@ -713,7 +693,7 @@ private:
         idx += sizeof(uint32_t);
 
         pointcloud2.fields[2].datatype = *reinterpret_cast<const uint8_t *>(&recvBuffer[idx]);
-        idx+= sizeof(uint8_t);
+        idx += sizeof(uint8_t);
 
         pointcloud2.fields[2].count = *reinterpret_cast<const uint32_t *>(&recvBuffer[idx]);
         idx += sizeof(uint32_t);
@@ -729,13 +709,39 @@ private:
         pointcloud2.fields[3].count = *reinterpret_cast<const uint32_t *>(&recvBuffer[idx]);
         idx += sizeof(uint32_t);
         // 准备读取点云数据
-\
+
         point_data_.resize(dataSize);
         std::cout << "dataSize:" << dataSize << std::endl;
         boost::asio::async_read(socket_, boost::asio::buffer(point_data_),
                                 boost::bind(&Session::handle_read_more_data_pointcloud2, shared_from_this(),
                                             boost::asio::placeholders::error));
-    
+    }
+
+    void handle_read_more_data_pointcloud2(const boost::system::error_code &error)
+    {
+        std::cout << "handle_read_more_data_pointcloud2" << std::endl;
+        if (dataSize != point_data_.size())
+        {
+            std::cout << "error dataSize:" << dataSize << "point_data_size:" << point_data_.size() << std::endl;
+            async_read_data();
+        }
+        if (error)
+        {
+            // Handle error
+            std::cout << "handle_read_more_data_pointcloud2_error" << std::endl;
+            async_read_data();
+        }
+        std::cout << "dataSize:" << dataSize << "point_data_size:" << point_data_.size() << std::endl;
+        auto more_it = point_data_.begin();
+        for (int i = 0; i < dataSize; i++)
+        {
+            uint8_t sub_point_data = *reinterpret_cast<const uint8_t *>(&(*more_it));
+            more_it += sizeof(uint8_t);
+            pointcloud2.data.push_back(sub_point_data);
+        }
+        // return pointcloud2;
+        pointcloud_pub_.publish(pointcloud2);
+        async_read_data(); // Read the next message
     }
 
     sensor_msgs::PointCloud2 parsePointCloud2()
@@ -849,13 +855,6 @@ private:
         double qz = *reinterpret_cast<const double *>(&recvBuffer[idx]);
         idx += sizeof(double);
         double qw = *reinterpret_cast<const double *>(&recvBuffer[idx]);
-        // idx += sizeof(double);
-
-        // double sx = *reinterpret_cast<const double*>(&recvBuffer[idx]);
-        // idx += sizeof(double);
-        // double sy = *reinterpret_cast<const double*>(&recvBuffer[idx]);
-        // idx += sizeof(double);
-        // double sz = *reinterpret_cast<const double*>(&recvBuffer[idx]);
 
         std::cout << "handle_read_marker" << std::endl;
 
@@ -883,16 +882,121 @@ private:
         async_read_data(); // Read the next message
     }
 
-    ip::tcp::socket socket_;
-    ros::NodeHandle &nh_;
-    ros::Publisher image_pub_;
-    ros::Publisher odometry_pub_;
-    ros::Publisher pointcloud_pub_;
-    ros::Publisher marker_pub_;
-    enum
+    void readMarkerArrayData()
     {
-        max_length = 1000000 + header_length
-    }; // Updated max_length
+        // read ros marker data from socket
+        std::cout << "readMarkerArrayData" << std::endl;
+        markerarray_data_.resize(sizeof(uint32_t));
+        boost::asio::async_read(socket_, boost::asio::buffer(markerarray_data_),
+                                boost::bind(&Session::handle_read_markerarray, shared_from_this(),
+                                            boost::asio::placeholders::error));
+    }
+
+    void handle_read_markerarray(const boost::system::error_code &error)
+    {
+        if (error)
+        {
+            // 处理错误
+            std::cout << "handle_read_marker error" << std::endl;
+            async_read_data();
+            return;
+        }
+
+        const uchar *recvBuffer = markerarray_data_.data();
+        size_t idx = 0;
+        uint32_t marker_count = *reinterpret_cast<const uint32_t *>(&recvBuffer[idx]);
+        std::cout << "markerarray size" << marker_count << std::endl;
+        idx += sizeof(uint32_t);
+        std::cout << "marker array buffer 解析" << std::endl;
+        more_markerarray_datasize = marker_count * (5 * sizeof(uint32_t) + 7 * sizeof(double));
+        // 假设我们每次从缓冲区读取一个Marker数据
+
+        more_markerarray_data_.resize(more_markerarray_datasize);
+        std::cout << "dataSize:" << more_markerarray_data_.size() << std::endl;
+        boost::asio::async_read(socket_, boost::asio::buffer(more_markerarray_data_),
+                                boost::bind(&Session::handle_read_more_markerarray, shared_from_this(),
+                                            boost::asio::placeholders::error));
+    }
+
+    void handle_read_more_markerarray(const boost::system::error_code &error)
+    {
+        std::cout << "handle_read_more_markerarray" << std::endl;
+        if (more_markerarray_datasize != more_markerarray_data_.size())
+        {
+            std::cout << "error dataSize:" << more_markerarray_datasize << "markerarray_data_size:" << more_markerarray_data_.size() << std::endl;
+            async_read_data();
+        }
+        if (error)
+        {
+            // Handle error
+            std::cout << "handle_read_more_data_markerarray_error" << std::endl;
+            async_read_data();
+        }
+
+        const uchar *recvBuffer = more_markerarray_data_.data();
+        std::cout << "dataSize:" << more_markerarray_datasize << "markerarray_data_size:" << more_markerarray_data_.size() << std::endl;
+        size_t idx = 0;
+        while (idx < markerarray_data_.size())
+        {
+            uint32_t sec = *reinterpret_cast<const uint32_t *>(&recvBuffer[idx]);
+            std::cout << "sec" << sec << std::endl;
+            idx += sizeof(uint32_t);
+            uint32_t nsec = *reinterpret_cast<const uint32_t *>(&recvBuffer[idx]);
+            idx += sizeof(uint32_t);
+            uint32_t id = *reinterpret_cast<const uint32_t *>(&recvBuffer[idx]);
+            std::cout << "id" << id << std::endl;
+            idx += sizeof(uint32_t);
+            uint32_t action = *reinterpret_cast<const uint32_t *>(&recvBuffer[idx]);
+            std::cout << "action" << action << std::endl;
+            idx += sizeof(uint32_t);
+            uint32_t type = *reinterpret_cast<const uint32_t *>(&recvBuffer[idx]);
+            std::cout << "type " << type << std::endl;
+            idx += sizeof(uint32_t);
+
+            // 1. 解码位置数据
+            double x = *reinterpret_cast<const double *>(&recvBuffer[idx]);
+            idx += sizeof(double);
+            double y = *reinterpret_cast<const double *>(&recvBuffer[idx]);
+            idx += sizeof(double);
+            double z = *reinterpret_cast<const double *>(&recvBuffer[idx]);
+            idx += sizeof(double);
+
+            // 2. 解码方向（四元数）数据
+            double qx = *reinterpret_cast<const double *>(&recvBuffer[idx]);
+            idx += sizeof(double);
+            double qy = *reinterpret_cast<const double *>(&recvBuffer[idx]);
+            idx += sizeof(double);
+            double qz = *reinterpret_cast<const double *>(&recvBuffer[idx]);
+            idx += sizeof(double);
+            double qw = *reinterpret_cast<const double *>(&recvBuffer[idx]);
+            idx += sizeof(double);
+
+            // 构造Marker
+            visualization_msgs::Marker marker;
+            marker.header.stamp.sec = sec;
+            marker.header.stamp.nsec = nsec;
+            marker.header.frame_id = "map";
+            marker.id = id;
+            marker.type = type;
+            marker.action = action;
+            marker.pose.position.x = x;
+            marker.pose.position.y = y;
+            marker.pose.position.z = z;
+            marker.pose.orientation.x = qx;
+            marker.pose.orientation.y = qy;
+            marker.pose.orientation.z = qz;
+            marker.pose.orientation.w = qw;
+
+            // 添加到MarkerArray
+            markerarray.markers.push_back(marker);
+            std::cout << "Marker received with ID: " << id << ", Type: " << type << std::endl;
+        }
+        // 发布MarkerArray
+        markerArray_pub_.publish(markerarray);
+
+        // 继续读取下一个数据包
+        async_read_data();
+    }
 };
 
 typedef boost::shared_ptr<Session> SessionPtr;
